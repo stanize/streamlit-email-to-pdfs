@@ -6,6 +6,7 @@ from datetime import datetime
 import extract_msg
 
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
@@ -71,7 +72,7 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
 
     # Header
     elements.append(Paragraph("<b>Email Message</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1 * inch, 0.15 * inch))
 
     info = f"""
         <b>Subject:</b> {subject}<br/>
@@ -85,11 +86,11 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
         info += f"<b>Date:</b> {date}<br/>"
 
     elements.append(Paragraph(info, styles["NormalUnicode"]))
-    elements.append(Spacer(1, 18))
+    elements.append(Spacer(1 * inch, 0.25 * inch))
 
     # Body
     elements.append(Paragraph("<b>Body:</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1 * inch, 0.15 * inch))
 
     # Convert \n to <br/> for Paragraph
     body_html = body.replace("\n", "<br/>")
