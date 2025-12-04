@@ -1,3 +1,5 @@
 streamlit
 extract_msg
 reportlab
+extract-msg
+weasyprint
