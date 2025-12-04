@@ -105,7 +105,7 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
 # -----------------------------------------
 # Streamlit App
 # -----------------------------------------
-st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version")
+st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version (0.1)")
 
 uploaded_zip = st.file_uploader("Upload ZIP with MSG files:", type=["zip"])
 
