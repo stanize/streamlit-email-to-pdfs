@@ -2,3 +2,5 @@ streamlit
 extract-msg
 xhtml2pdf
 reportlab
+python-dateutil
+olefile
