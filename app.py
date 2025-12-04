@@ -3,8 +3,8 @@ import io
 import zipfile
 import os
 from datetime import datetime
-import extract_msg
-import re
+import olefile
+import struct
 from html.parser import HTMLParser
 
 from reportlab.lib.pagesizes import A4
@@ -12,8 +12,19 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+
+
+# -----------------------------------------
+# MSG Property Tags
+# -----------------------------------------
+PR_SUBJECT = 0x0037001F
+PR_SENDER_NAME = 0x0C1A001F
+PR_SENT_REPRESENTING_NAME = 0x0042001F
+PR_DISPLAY_TO = 0x0E04001F
+PR_DISPLAY_CC = 0x0E03001F
+PR_CLIENT_SUBMIT_TIME = 0x00390040
+PR_BODY = 0x1000001F
+PR_HTML = 0x10130102
 
 
 # -----------------------------------------
@@ -27,8 +38,6 @@ class HTMLToReportLab(HTMLParser):
         self.table_data = []
         self.current_row = []
         self.current_cell = []
-        self.in_bold = False
-        self.in_italic = False
         
     def handle_starttag(self, tag, attrs):
         if tag == 'table':
@@ -40,11 +49,9 @@ class HTMLToReportLab(HTMLParser):
             self.current_cell = []
         elif tag == 'br':
             self.text_parts.append('<br/>')
-        elif tag == 'b' or tag == 'strong':
-            self.in_bold = True
+        elif tag in ['b', 'strong']:
             self.text_parts.append('<b>')
-        elif tag == 'i' or tag == 'em':
-            self.in_italic = True
+        elif tag in ['i', 'em']:
             self.text_parts.append('<i>')
         elif tag == 'p':
             self.text_parts.append('<br/>')
@@ -60,11 +67,9 @@ class HTMLToReportLab(HTMLParser):
             cell_text = ''.join(self.current_cell).strip()
             self.current_row.append(cell_text)
             self.current_cell = []
-        elif tag == 'b' or tag == 'strong':
-            self.in_bold = False
+        elif tag in ['b', 'strong']:
             self.text_parts.append('</b>')
-        elif tag == 'i' or tag == 'em':
-            self.in_italic = False
+        elif tag in ['i', 'em']:
             self.text_parts.append('</i>')
         elif tag == 'p':
             self.text_parts.append('<br/>')
@@ -83,21 +88,73 @@ class HTMLToReportLab(HTMLParser):
 
 
 # -----------------------------------------
-# Clean invisible / unsupported characters
+# Parse MSG file manually
+# -----------------------------------------
+def parse_msg_file(msg_bytes):
+    """Parse MSG file using olefile directly"""
+    ole = olefile.OleFileIO(msg_bytes)
+    
+    def get_property(prop_id):
+        """Get property from MSG file"""
+        prop_tag = f"{prop_id:08X}"
+        
+        # Try different possible stream names
+        possible_names = [
+            f"__substg1.0_{prop_tag}",
+            f"__properties_version1.0/{prop_tag}",
+        ]
+        
+        for name in possible_names:
+            if ole.exists(name):
+                try:
+                    data = ole.openstream(name).read()
+                    # For string properties (001F suffix)
+                    if prop_tag.endswith("001F"):
+                        try:
+                            return data.decode('utf-16-le').rstrip('\x00')
+                        except:
+                            return data.decode('utf-8', errors='ignore').rstrip('\x00')
+                    # For binary properties (0102 suffix)
+                    elif prop_tag.endswith("0102"):
+                        return data
+                    # For time properties (0040 suffix)
+                    elif prop_tag.endswith("0040"):
+                        return data.decode('utf-8', errors='ignore')
+                    return data.decode('utf-8', errors='ignore')
+                except:
+                    pass
+        return ""
+    
+    msg_data = {
+        'subject': get_property(PR_SUBJECT),
+        'sender': get_property(PR_SENDER_NAME) or get_property(PR_SENT_REPRESENTING_NAME),
+        'to': get_property(PR_DISPLAY_TO),
+        'cc': get_property(PR_DISPLAY_CC),
+        'date': get_property(PR_CLIENT_SUBMIT_TIME),
+        'body': get_property(PR_BODY),
+        'html': get_property(PR_HTML),
+    }
+    
+    ole.close()
+    return msg_data
+
+
+# -----------------------------------------
+# Clean text
 # -----------------------------------------
 def clean_text(t):
     if not t:
         return ""
-
+    
     INVISIBLE_CHARS = [
         "\u200b", "\u200c", "\u200d", "\ufeff",
         "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
         "\u2060", "\u000b", "\u000c", "\u00ad",
     ]
-
+    
     for ch in INVISIBLE_CHARS:
         t = t.replace(ch, "")
-
+    
     return t
 
 
@@ -107,6 +164,8 @@ def clean_text(t):
 def parse_html_body(html_body):
     parser = HTMLToReportLab()
     try:
+        if isinstance(html_body, bytes):
+            html_body = html_body.decode('utf-8', errors='ignore')
         parser.feed(html_body)
     except:
         pass
@@ -114,30 +173,24 @@ def parse_html_body(html_body):
 
 
 # -----------------------------------------
-# Convert MSG → PDF using Platypus
+# Convert MSG → PDF
 # -----------------------------------------
 def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
-    temp_file = io.BytesIO(msg_bytes)
-    temp_file.name = filename
-
-    msg = extract_msg.Message(temp_file)
-
-    # Convert all fields to strings explicitly
-    sender = clean_text(str(msg.sender) if msg.sender else "")
-    to = clean_text(str(msg.to) if msg.to else "")
-    cc = clean_text(str(msg.cc) if msg.cc else "")
-    subject = clean_text(str(msg.subject) if msg.subject else "")
-    date = clean_text(str(msg.date) if msg.date else "")
+    # Parse MSG file
+    msg_data = parse_msg_file(msg_bytes)
     
-    # Try to get HTML body first, fallback to plain text
-    body_html = msg.htmlBody if hasattr(msg, 'htmlBody') and msg.htmlBody else None
-    body_text = clean_text(str(msg.body) if msg.body else "")
+    sender = clean_text(str(msg_data.get('sender', '')))
+    to = clean_text(str(msg_data.get('to', '')))
+    cc = clean_text(str(msg_data.get('cc', '')))
+    subject = clean_text(str(msg_data.get('subject', '')))
+    date = clean_text(str(msg_data.get('date', '')))
+    body_html = msg_data.get('html')
+    body_text = clean_text(str(msg_data.get('body', '')))
 
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
 
     styles = getSampleStyleSheet()
-    
     elements = []
 
     # Header
