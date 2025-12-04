@@ -54,12 +54,13 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
 
     msg = extract_msg.Message(temp_file)
 
-    sender = clean_text(msg.sender or "")
-    to = clean_text(msg.to or "")
-    cc = clean_text(msg.cc or "")
-    subject = clean_text(msg.subject or "")
-    date = clean_text(msg.date or "")
-    body = clean_text(msg.body or "")
+    # Convert all fields to strings explicitly
+    sender = clean_text(str(msg.sender) if msg.sender else "")
+    to = clean_text(str(msg.to) if msg.to else "")
+    cc = clean_text(str(msg.cc) if msg.cc else "")
+    subject = clean_text(str(msg.subject) if msg.subject else "")
+    date = clean_text(str(msg.date) if msg.date else "")
+    body = clean_text(str(msg.body) if msg.body else "")
 
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
@@ -105,7 +106,7 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
 # -----------------------------------------
 # Streamlit App
 # -----------------------------------------
-st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version (0.1)")
+st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version (0.2)")
 
 uploaded_zip = st.file_uploader("Upload ZIP with MSG files:", type=["zip"])
 
@@ -144,4 +145,6 @@ if uploaded_zip is not None and st.button("Convert to PDFs"):
             )
 
     except Exception as e:
+        import traceback
         st.error(f"Error: {e}")
+        st.code(traceback.format_exc())
