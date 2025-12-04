@@ -4,14 +4,13 @@ import zipfile
 import os
 from datetime import datetime
 import olefile
-import struct
-from html.parser import HTMLParser
-
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib import colors
+import pdfkit
+import tempfile
 
 
 # -----------------------------------------
@@ -28,66 +27,6 @@ PR_HTML = 0x10130102
 
 
 # -----------------------------------------
-# HTML to ReportLab converter
-# -----------------------------------------
-class HTMLToReportLab(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.text_parts = []
-        self.in_table = False
-        self.table_data = []
-        self.current_row = []
-        self.current_cell = []
-        
-    def handle_starttag(self, tag, attrs):
-        if tag == 'table':
-            self.in_table = True
-            self.table_data = []
-        elif tag == 'tr' and self.in_table:
-            self.current_row = []
-        elif tag in ['td', 'th'] and self.in_table:
-            self.current_cell = []
-        elif tag == 'br':
-            self.text_parts.append('<br/>')
-        elif tag in ['b', 'strong']:
-            self.text_parts.append('<b>')
-        elif tag in ['i', 'em']:
-            self.text_parts.append('<i>')
-        elif tag == 'p':
-            self.text_parts.append('<br/>')
-            
-    def handle_endtag(self, tag):
-        if tag == 'table':
-            self.in_table = False
-        elif tag == 'tr' and self.in_table:
-            if self.current_row:
-                self.table_data.append(self.current_row)
-            self.current_row = []
-        elif tag in ['td', 'th'] and self.in_table:
-            cell_text = ''.join(self.current_cell).strip()
-            self.current_row.append(cell_text)
-            self.current_cell = []
-        elif tag in ['b', 'strong']:
-            self.text_parts.append('</b>')
-        elif tag in ['i', 'em']:
-            self.text_parts.append('</i>')
-        elif tag == 'p':
-            self.text_parts.append('<br/>')
-            
-    def handle_data(self, data):
-        if self.in_table and self.current_cell is not None:
-            self.current_cell.append(data)
-        else:
-            self.text_parts.append(data)
-    
-    def get_content(self):
-        return ''.join(self.text_parts)
-    
-    def get_tables(self):
-        return self.table_data
-
-
-# -----------------------------------------
 # Parse MSG file manually
 # -----------------------------------------
 def parse_msg_file(msg_bytes):
@@ -98,7 +37,6 @@ def parse_msg_file(msg_bytes):
         """Get property from MSG file"""
         prop_tag = f"{prop_id:08X}"
         
-        # Try different possible stream names
         possible_names = [
             f"__substg1.0_{prop_tag}",
             f"__properties_version1.0/{prop_tag}",
@@ -108,16 +46,13 @@ def parse_msg_file(msg_bytes):
             if ole.exists(name):
                 try:
                     data = ole.openstream(name).read()
-                    # For string properties (001F suffix)
                     if prop_tag.endswith("001F"):
                         try:
                             return data.decode('utf-16-le').rstrip('\x00')
                         except:
                             return data.decode('utf-8', errors='ignore').rstrip('\x00')
-                    # For binary properties (0102 suffix)
                     elif prop_tag.endswith("0102"):
                         return data
-                    # For time properties (0040 suffix)
                     elif prop_tag.endswith("0040"):
                         return data.decode('utf-8', errors='ignore')
                     return data.decode('utf-8', errors='ignore')
@@ -159,21 +94,7 @@ def clean_text(t):
 
 
 # -----------------------------------------
-# Parse HTML and extract tables
-# -----------------------------------------
-def parse_html_body(html_body):
-    parser = HTMLToReportLab()
-    try:
-        if isinstance(html_body, bytes):
-            html_body = html_body.decode('utf-8', errors='ignore')
-        parser.feed(html_body)
-    except:
-        pass
-    return parser.get_content(), parser.get_tables()
-
-
-# -----------------------------------------
-# Convert MSG → PDF
+# Convert MSG → PDF using wkhtmltopdf
 # -----------------------------------------
 def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
     # Parse MSG file
@@ -187,70 +108,80 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
     body_html = msg_data.get('html')
     body_text = clean_text(str(msg_data.get('body', '')))
 
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
-
-    styles = getSampleStyleSheet()
-    elements = []
-
-    # Header
-    elements.append(Paragraph("<b>Email Message</b>", styles["Heading1"]))
-    elements.append(Spacer(width=1, height=12))
-
-    info = f"""
-        <b>Subject:</b> {subject}<br/>
-        <b>From:</b> {sender}<br/>
-        <b>To:</b> {to}<br/>
+    # Create complete HTML document with email header
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                margin: 20px;
+            }}
+            .email-header {{
+                background-color: #f5f5f5;
+                padding: 15px;
+                border: 1px solid #ddd;
+                margin-bottom: 20px;
+                font-size: 11pt;
+            }}
+            .email-header p {{
+                margin: 5px 0;
+            }}
+            .email-header strong {{
+                display: inline-block;
+                width: 80px;
+            }}
+            .email-body {{
+                margin-top: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="email-header">
+            <p><strong>Subject:</strong> {subject}</p>
+            <p><strong>From:</strong> {sender}</p>
+            <p><strong>To:</strong> {to}</p>
     """
+    
     if cc:
-        info += f"<b>CC:</b> {cc}<br/>"
+        html_content += f'<p><strong>CC:</strong> {cc}</p>'
     if date:
-        info += f"<b>Date:</b> {date}<br/>"
-
-    elements.append(Paragraph(info, styles["Normal"]))
-    elements.append(Spacer(width=1, height=18))
-
-    # Body
-    elements.append(Paragraph("<b>Body:</b>", styles["Heading2"]))
-    elements.append(Spacer(width=1, height=12))
-
+        html_content += f'<p><strong>Date:</strong> {date}</p>'
+    
+    html_content += '</div><div class="email-body">'
+    
     if body_html:
-        # Parse HTML and extract tables
-        parsed_text, tables = parse_html_body(body_html)
-        
-        # Add parsed text
-        if parsed_text.strip():
-            elements.append(Paragraph(parsed_text, styles["Normal"]))
-            elements.append(Spacer(width=1, height=12))
-        
-        # Add tables
-        for table_data in tables:
-            if table_data and len(table_data) > 0:
-                try:
-                    t = Table(table_data)
-                    t.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                        ('FONTSIZE', (0, 0), (-1, 0), 10),
-                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                    ]))
-                    elements.append(t)
-                    elements.append(Spacer(width=1, height=12))
-                except:
-                    pass
+        # Use the HTML body directly
+        if isinstance(body_html, bytes):
+            body_html = body_html.decode('utf-8', errors='ignore')
+        html_content += body_html
     else:
-        # Convert plain text to HTML
+        # Fallback to plain text
         body_html_converted = body_text.replace('\n', '<br/>')
-        elements.append(Paragraph(body_html_converted, styles["Normal"]))
-
-    doc.build(elements)
-
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
+        html_content += f'<pre style="font-family: Arial; white-space: pre-wrap;">{body_html_converted}</pre>'
+    
+    html_content += '</div></body></html>'
+    
+    # Convert HTML to PDF using pdfkit
+    options = {
+        'page-size': 'A4',
+        'margin-top': '0.75in',
+        'margin-right': '0.75in',
+        'margin-bottom': '0.75in',
+        'margin-left': '0.75in',
+        'encoding': "UTF-8",
+        'no-outline': None,
+        'enable-local-file-access': None
+    }
+    
+    try:
+        pdf_bytes = pdfkit.from_string(html_content, False, options=options)
+        return pdf_bytes
+    except Exception as e:
+        st.error(f"Error converting {filename}: {str(e)}")
+        raise
 
 
 # -----------------------------------------
@@ -260,7 +191,7 @@ st.title("MSG → PDF Converter (ZIP → ZIP)")
 
 st.markdown("""
 Upload a ZIP file containing .msg email files, and this tool will convert them to PDFs 
-with preserved formatting including tables, lists, and basic styling.
+with **full HTML formatting preserved** including colors, tables, fonts, and layout.
 """)
 
 uploaded_zip = st.file_uploader("Upload ZIP with MSG files:", type=["zip"])
