@@ -72,7 +72,7 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
 
     # Header
     elements.append(Paragraph("<b>Email Message</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(1 * inch, 0.15 * inch))
+    elements.append(Spacer(width=1, height=12))
 
     info = f"""
         <b>Subject:</b> {subject}<br/>
@@ -86,11 +86,11 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
         info += f"<b>Date:</b> {date}<br/>"
 
     elements.append(Paragraph(info, styles["NormalUnicode"]))
-    elements.append(Spacer(1 * inch, 0.25 * inch))
+    elements.append(Spacer(width=1, height=18))
 
     # Body
     elements.append(Paragraph("<b>Body:</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(1 * inch, 0.15 * inch))
+    elements.append(Spacer(width=1, height=12))
 
     # Convert \n to <br/> for Paragraph
     body_html = body.replace("\n", "<br/>")
