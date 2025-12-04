@@ -3,162 +3,144 @@ import io
 import zipfile
 import os
 from datetime import datetime
-
 import extract_msg
 
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
 
-# ==========================================
-# Register Unicode Font (Fixes ■ black boxes)
-# ==========================================
-# Make sure DejaVuSans.ttf is in the same folder as app.py
+
+# -----------------------------------------
+# Register full unicode fonts
+# -----------------------------------------
 pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
 pdfmetrics.registerFont(TTFont('DejaVu-Bold', 'DejaVuSans-Bold.ttf'))
 
 
-# ==========================================
-# Convert MSG → PDF (Unicode Safe)
-# ==========================================
-def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
-    temp_msg_file = io.BytesIO(msg_bytes)
-    temp_msg_file.name = filename
+# -----------------------------------------
+# Clean invisible / unsupported characters
+# -----------------------------------------
+def clean_text(t):
+    if not t:
+        return ""
 
-    msg = extract_msg.Message(temp_msg_file)
-
-    sender = msg.sender or ""
-    to = msg.to or ""
-    cc = msg.cc or ""
-    subject = msg.subject or ""
-    date = msg.date or ""
-
-    body = msg.body or ""
-    if isinstance(body, bytes):
-        body = body.decode("utf-8", errors="replace")
-
-    # PDF buffer
-    pdf_buffer = io.BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=A4)
-    width, height = A4
-
-    margin_x = 20 * mm
-    margin_y = 20 * mm
-
-    y = height - margin_y
-
-    # Header Title
-    c.setFont("DejaVu-Bold", 14)
-    c.drawString(margin_x, y, "Email Message")
-    y -= 20
-
-    # Email metadata
-    c.setFont("DejaVu", 10)
-    header_lines = [
-        f"Subject: {subject}",
-        f"From: {sender}",
-        f"To: {to}",
+    INVISIBLE_CHARS = [
+        "\u200b",  # zero width space
+        "\u200c",  # zero width non-joiner
+        "\u200d",  # zero width joiner
+        "\ufeff",  # zero width no-break space
+        "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",  # directional marks
+        "\u2060",  # word joiner
+        "\u000b",  # vertical tab
+        "\u000c",  # form feed
+        "\u00ad",  # soft hyphen
     ]
+
+    for ch in INVISIBLE_CHARS:
+        t = t.replace(ch, "")
+
+    return t
+
+
+# -----------------------------------------
+# Convert MSG → PDF using Platypus
+# -----------------------------------------
+def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
+    temp_file = io.BytesIO(msg_bytes)
+    temp_file.name = filename
+
+    msg = extract_msg.Message(temp_file)
+
+    sender = clean_text(msg.sender or "")
+    to = clean_text(msg.to or "")
+    cc = clean_text(msg.cc or "")
+    subject = clean_text(msg.subject or "")
+    date = clean_text(msg.date or "")
+    body = clean_text(msg.body or "")
+
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="NormalUnicode", fontName="DejaVu", fontSize=10, leading=14))
+    styles.add(ParagraphStyle(name="HeaderUnicode", fontName="DejaVu-Bold", fontSize=12, leading=16))
+
+    elements = []
+
+    # Header
+    elements.append(Paragraph("<b>Email Message</b>", styles["HeaderUnicode"]))
+    elements.append(Spacer(1, 12))
+
+    info = f"""
+        <b>Subject:</b> {subject}<br/>
+        <b>From:</b> {sender}<br/>
+        <b>To:</b> {to}<br/>
+    """
     if cc:
-        header_lines.append(f"CC: {cc}")
+        info += f"<b>CC:</b> {cc}<br/>"
+
     if date:
-        header_lines.append(f"Date: {date}")
+        info += f"<b>Date:</b> {date}<br/>"
 
-    for line in header_lines:
-        c.drawString(margin_x, y, line)
-        y -= 14
+    elements.append(Paragraph(info, styles["NormalUnicode"]))
+    elements.append(Spacer(1, 18))
 
-    # Divider
-    y -= 8
-    c.line(margin_x, y, width - margin_x, y)
-    y -= 20
+    # Body
+    elements.append(Paragraph("<b>Body:</b>", styles["HeaderUnicode"]))
+    elements.append(Spacer(1, 12))
 
-    # Body Title
-    c.setFont("DejaVu-Bold", 12)
-    c.drawString(margin_x, y, "Body:")
-    y -= 16
+    # Convert \n to <br/> for Paragraph
+    body_html = body.replace("\n", "<br/>")
+    elements.append(Paragraph(body_html, styles["NormalUnicode"]))
 
-    # Multi-line body with Unicode wrapping
-    c.setFont("DejaVu", 10)
-    max_chars = 110
-    line_height = 13
-
-    for paragraph in body.splitlines():
-        while len(paragraph) > max_chars:
-            c.drawString(margin_x, y, paragraph[:max_chars])
-            paragraph = paragraph[max_chars:]
-            y -= line_height
-            if y < margin_y:
-                c.showPage()
-                c.setFont("DejaVu", 10)
-                y = height - margin_y
-
-        c.drawString(margin_x, y, paragraph)
-        y -= line_height
-
-        if y < margin_y:
-            c.showPage()
-            c.setFont("DejaVu", 10)
-            y = height - margin_y
-
-    c.showPage()
-    c.save()
+    doc.build(elements)
 
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
 
 
-# ==========================================
+# -----------------------------------------
 # Streamlit App
-# ==========================================
-st.title("MSG → PDF Converter (ZIP → ZIP)")
+# -----------------------------------------
+st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version")
 
-st.write(
-    "Upload a `.zip` containing `.msg` files. "
-    "The app converts each email into a clean Unicode PDF and returns a ZIP of PDFs."
-)
+uploaded_zip = st.file_uploader("Upload ZIP with MSG files:", type=["zip"])
 
-uploaded_zip = st.file_uploader("Upload ZIP with MSG files", type=["zip"])
+if uploaded_zip is not None and st.button("Convert to PDFs"):
+    try:
+        zip_bytes = uploaded_zip.read()
+        input_zip = zipfile.ZipFile(io.BytesIO(zip_bytes))
 
-if uploaded_zip is not None:
-    if st.button("Convert to PDFs"):
-        try:
-            zip_bytes = uploaded_zip.read()
-            input_zip = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        output_buffer = io.BytesIO()
+        msg_count = 0
 
-            output_buffer = io.BytesIO()
-            msg_count = 0
+        with zipfile.ZipFile(output_buffer, "w", zipfile.ZIP_DEFLATED) as outzip:
+            for f in input_zip.infolist():
+                if f.is_dir() or not f.filename.lower().endswith(".msg"):
+                    continue
 
-            with zipfile.ZipFile(output_buffer, "w", zipfile.ZIP_DEFLATED) as outzip:
-                for item in input_zip.infolist():
-                    if item.is_dir():
-                        continue
-                    if not item.filename.lower().endswith(".msg"):
-                        continue
+                msg_count += 1
+                msg_data = input_zip.read(f.filename)
+                pdf_data = msg_to_pdf_bytes(msg_data, f.filename)
 
-                    msg_count += 1
-                    msg_data = input_zip.read(item.filename)
+                base = os.path.splitext(os.path.basename(f.filename))[0]
+                outzip.writestr(f"{base}.pdf", pdf_data)
 
-                    pdf_bytes = msg_to_pdf_bytes(msg_data, os.path.basename(item.filename))
+        if msg_count == 0:
+            st.warning("No .msg files found in ZIP.")
+        else:
+            output_buffer.seek(0)
+            outname = f"converted_pdfs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
 
-                    base = os.path.splitext(os.path.basename(item.filename))[0]
-                    outzip.writestr(f"{base}.pdf", pdf_bytes)
+            st.success(f"Converted {msg_count} emails successfully!")
+            st.download_button(
+                "Download ZIP of PDFs",
+                data=output_buffer,
+                file_name=outname,
+                mime="application/zip"
+            )
 
-            if msg_count == 0:
-                st.warning("No .msg files found in the ZIP.")
-            else:
-                output_buffer.seek(0)
-                outname = f"converted_pdfs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-
-                st.success(f"Done! Converted {msg_count} email(s).")
-                st.download_button(
-                    "Download ZIP with PDFs",
-                    data=output_buffer,
-                    file_name=outname,
-                    mime="application/zip"
-                )
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
