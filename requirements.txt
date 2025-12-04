@@ -1,5 +1,4 @@
 streamlit
-extract_msg
-reportlab
 extract-msg
-weasyprint
+xhtml2pdf
+reportlab
