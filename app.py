@@ -4,20 +4,8 @@ import zipfile
 import os
 from datetime import datetime
 import extract_msg
-
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-
-# -----------------------------------------
-# Register full unicode fonts
-# -----------------------------------------
-pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
-pdfmetrics.registerFont(TTFont('DejaVu-Bold', 'DejaVuSans-Bold.ttf'))
+from weasyprint import HTML, CSS
+from weasyprint.text.fonts import FontConfiguration
 
 
 # -----------------------------------------
@@ -46,7 +34,7 @@ def clean_text(t):
 
 
 # -----------------------------------------
-# Convert MSG → PDF using Platypus
+# Convert MSG → PDF with HTML rendering
 # -----------------------------------------
 def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
     temp_file = io.BytesIO(msg_bytes)
@@ -60,53 +48,104 @@ def msg_to_pdf_bytes(msg_bytes: bytes, filename: str) -> bytes:
     cc = clean_text(str(msg.cc) if msg.cc else "")
     subject = clean_text(str(msg.subject) if msg.subject else "")
     date = clean_text(str(msg.date) if msg.date else "")
-    body = clean_text(str(msg.body) if msg.body else "")
+    
+    # Try to get HTML body first, fallback to plain text
+    body_html = msg.htmlBody if hasattr(msg, 'htmlBody') and msg.htmlBody else None
+    body_text = clean_text(str(msg.body) if msg.body else "")
 
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
-
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="NormalUnicode", fontName="DejaVu", fontSize=10, leading=14))
-    styles.add(ParagraphStyle(name="HeaderUnicode", fontName="DejaVu-Bold", fontSize=12, leading=16))
-
-    elements = []
-
-    # Header
-    elements.append(Paragraph("<b>Email Message</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(width=1, height=12))
-
-    info = f"""
-        <b>Subject:</b> {subject}<br/>
-        <b>From:</b> {sender}<br/>
-        <b>To:</b> {to}<br/>
+    # Create HTML document
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            @page {{
+                size: A4;
+                margin: 2cm;
+            }}
+            body {{
+                font-family: Arial, sans-serif;
+                font-size: 10pt;
+                line-height: 1.4;
+                color: #000;
+            }}
+            .email-header {{
+                background-color: #f5f5f5;
+                padding: 15px;
+                border: 1px solid #ddd;
+                margin-bottom: 20px;
+                border-radius: 5px;
+            }}
+            .email-header p {{
+                margin: 5px 0;
+            }}
+            .email-header strong {{
+                display: inline-block;
+                width: 80px;
+                color: #333;
+            }}
+            .email-body {{
+                padding: 10px;
+                border: 1px solid #eee;
+                background-color: #fff;
+            }}
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                margin: 10px 0;
+            }}
+            table td, table th {{
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+            }}
+            table th {{
+                background-color: #f2f2f2;
+                font-weight: bold;
+            }}
+            img {{
+                max-width: 100%;
+                height: auto;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="email-header">
+            <p><strong>Subject:</strong> {subject}</p>
+            <p><strong>From:</strong> {sender}</p>
+            <p><strong>To:</strong> {to}</p>
+            {f'<p><strong>CC:</strong> {cc}</p>' if cc else ''}
+            {f'<p><strong>Date:</strong> {date}</p>' if date else ''}
+        </div>
+        <div class="email-body">
     """
-    if cc:
-        info += f"<b>CC:</b> {cc}<br/>"
 
-    if date:
-        info += f"<b>Date:</b> {date}<br/>"
+    if body_html:
+        # Use HTML body if available
+        html_content += body_html
+    else:
+        # Convert plain text to HTML
+        body_html_converted = body_text.replace('\n', '<br/>')
+        html_content += f"<div>{body_html_converted}</div>"
 
-    elements.append(Paragraph(info, styles["NormalUnicode"]))
-    elements.append(Spacer(width=1, height=18))
+    html_content += """
+        </div>
+    </body>
+    </html>
+    """
 
-    # Body
-    elements.append(Paragraph("<b>Body:</b>", styles["HeaderUnicode"]))
-    elements.append(Spacer(width=1, height=12))
+    # Convert HTML to PDF using WeasyPrint
+    font_config = FontConfiguration()
+    pdf_bytes = HTML(string=html_content).write_pdf(font_config=font_config)
 
-    # Convert \n to <br/> for Paragraph
-    body_html = body.replace("\n", "<br/>")
-    elements.append(Paragraph(body_html, styles["NormalUnicode"]))
-
-    doc.build(elements)
-
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
+    return pdf_bytes
 
 
 # -----------------------------------------
 # Streamlit App
 # -----------------------------------------
-st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version (0.2)")
+st.title("MSG → PDF Converter (ZIP → ZIP) — Perfect Formatting Version")
 
 uploaded_zip = st.file_uploader("Upload ZIP with MSG files:", type=["zip"])
 
